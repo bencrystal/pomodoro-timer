@@ -22,10 +22,10 @@
 #include <Arduino.h>
 
 // ── Pin definitions ───────────────────────────────
-#define PIN_BTN   D1   // B3F button (other leg to GND)
-#define PIN_R     D2
-#define PIN_G     D3
-#define PIN_B     D10
+#define PIN_BTN   1    // D1 — B3F button (other leg to GND, internal pullup)
+#define PIN_R     2    // D2
+#define PIN_G     3    // D3
+#define PIN_B     10   // D10
 
 // ── Timer durations ───────────────────────────────
 #define DURATION_SHORT  (25UL * 60 * 1000)   // 25 min in ms
@@ -41,17 +41,10 @@
 enum State { SLEEPING, RUNNING, PAUSED, DONE };
 State state = SLEEPING;
 
-// ── Retained RAM (survives deep sleep) ────────────
-// nRF52840 has 32 retained registers (4 bytes each)
-// We use two to persist state across deep sleep wakeup
-#define MAGIC 0xDEADBEEFUL
-volatile uint32_t* retainedMagic    = (uint32_t*)0x20000000;
-volatile uint32_t* retainedDuration = (uint32_t*)0x20000004;
-
 // ── Runtime variables ─────────────────────────────
 unsigned long timerDuration   = DURATION_SHORT;
 unsigned long startMillis     = 0;
-unsigned long pausedMillis    = 0;   // how long spent paused
+unsigned long pausedMillis    = 0;   // accumulated pause duration in ms
 unsigned long pauseStarted    = 0;
 unsigned long elapsed         = 0;
 
@@ -63,9 +56,6 @@ unsigned long lastReleaseAt   = 0;
 int           clickCount      = 0;
 bool          longPressHandled = false;
 
-// LED breathing
-unsigned long ledPhase        = 0;
-
 // ── Forward declarations ──────────────────────────
 void goToSleep();
 void startTimer(unsigned long duration);
@@ -74,10 +64,19 @@ void updateLED();
 void breathe(uint8_t r, uint8_t g, uint8_t b, float speed);
 void setRGB(uint8_t r, uint8_t g, uint8_t b);
 void flashBattery();
-void strobeRGB(uint8_t r, uint8_t g, uint8_t b);
 void blinkRGB(uint8_t r, uint8_t g, uint8_t b, int times, int onMs, int offMs);
 float getBatteryVoltage();
 int   getBatteryPercent();
+void onSingleClick();
+void onLongPress();
+
+// ── Wake detection ────────────────────────────────
+// SYSTEMOFF causes a full reboot; bit 16 of RESETREAS = GPIO wakeup
+bool wokeFromGPIO() {
+  uint32_t reason = NRF_POWER->RESETREAS;
+  NRF_POWER->RESETREAS = 0xFFFFFFFF;   // clear after reading
+  return (reason & 0x00010000) != 0;
+}
 
 // =====================================================
 // SETUP
@@ -89,29 +88,20 @@ void setup() {
   pinMode(PIN_B, OUTPUT);
   setRGB(0, 0, 0);
 
-  // Check if we woke from deep sleep (magic value in retained RAM)
-  // If so, determine long vs short press at wakeup
-  bool wokeFromSleep = (*retainedMagic == MAGIC);
-
-  if (wokeFromSleep) {
-    // Detect long press at wakeup: button will still be held
-    // Wait to see if it's held for LONG_PRESS_MS
+  if (wokeFromGPIO()) {
+    // Time how long button is held to distinguish short vs long press
     unsigned long wakeTime = millis();
     while (digitalRead(PIN_BTN) == LOW) {
       if (millis() - wakeTime > LONG_PRESS_MS) {
-        // Long press → 45 min
         startTimer(DURATION_LONG);
-        // Wait for release
-        while (digitalRead(PIN_BTN) == LOW) delay(10);
+        while (digitalRead(PIN_BTN) == LOW) delay(10);  // wait for release
         return;
       }
       delay(10);
     }
-    // Short press → 25 min
     startTimer(DURATION_SHORT);
   } else {
-    // Cold boot — just sleep and wait for button
-    *retainedMagic = MAGIC;
+    // Cold boot / USB power — go straight to sleep
     goToSleep();
   }
 }
@@ -164,7 +154,7 @@ void handleButtonEvent() {
     btnState = LOW;
   }
 
-  // While held — detect long press
+  // While held — detect long press (fires on hold, not release)
   if (reading == LOW && btnState == LOW && !longPressHandled) {
     if (millis() - btnPressedAt >= LONG_PRESS_MS) {
       longPressHandled = true;
@@ -176,16 +166,13 @@ void handleButtonEvent() {
   // Release detected
   if (reading == HIGH && btnState == LOW) {
     btnState = HIGH;
-    unsigned long heldFor = millis() - btnPressedAt;
-
     if (!longPressHandled) {
-      // Count as a click
       clickCount++;
       lastReleaseAt = millis();
     }
   }
 
-  // Evaluate click count after window expires
+  // Evaluate click count after triple-click window expires
   if (clickCount > 0 && millis() - lastReleaseAt > TRIPLE_CLICK_MS) {
     if (clickCount >= 3) {
       flashBattery();
@@ -199,13 +186,11 @@ void handleButtonEvent() {
 void onSingleClick() {
   switch (state) {
     case RUNNING:
-      // Pause
       state = PAUSED;
       pauseStarted = millis();
       break;
 
     case PAUSED:
-      // Resume
       pausedMillis += millis() - pauseStarted;
       state = RUNNING;
       break;
@@ -223,7 +208,6 @@ void onLongPress() {
   switch (state) {
     case RUNNING:
     case PAUSED:
-      // Cancel → sleep
       goToSleep();
       break;
 
@@ -240,17 +224,15 @@ void updateLED() {
     case RUNNING: {
       unsigned long remaining = timerDuration - elapsed;
       if (remaining <= 5UL * 60 * 1000) {
-        // Last 5 min — faster amber breathing
-        breathe(255, 80, 0, 2.5);
+        breathe(255, 80, 0, 2.5);    // last 5 min — faster amber
       } else {
-        // Normal — slow green breathing
-        breathe(0, 255, 40, 1.2);
+        breathe(0, 255, 40, 1.2);   // normal — slow green
       }
       break;
     }
 
     case PAUSED: {
-      // Slow yellow/orange blink (500ms on, 800ms off)
+      // 500ms on, 800ms off
       unsigned long t = millis() % 1300;
       if (t < 500) setRGB(255, 120, 0);
       else         setRGB(0, 0, 0);
@@ -258,7 +240,7 @@ void updateLED() {
     }
 
     case DONE: {
-      // Fast red/white strobe
+      // Fast strobe: 100ms white / 100ms red
       unsigned long t = millis() % 200;
       if (t < 100) setRGB(255, 255, 255);
       else         setRGB(255, 0, 0);
@@ -271,7 +253,7 @@ void updateLED() {
   }
 }
 
-// Smooth sine-wave breathing effect
+// Smooth sine-wave breathing — brightness = sin²(t·π·speed)
 void breathe(uint8_t r, uint8_t g, uint8_t b, float speed) {
   float t = millis() / 1000.0 * speed;
   float brightness = (sin(t * PI) + 1.0) / 2.0;  // 0.0 – 1.0
@@ -302,15 +284,14 @@ void blinkRGB(uint8_t r, uint8_t g, uint8_t b, int times, int onMs, int offMs) {
 // BATTERY
 // =====================================================
 float getBatteryVoltage() {
-  // Enable battery measurement on XIAO nRF52840
-  // Pull pin 14 high to enable battery ADC on XIAO nRF52840
+  // Pull pin 14 HIGH to enable battery measurement on XIAO nRF52840
   pinMode(14, OUTPUT);
   digitalWrite(14, HIGH);
   delay(10);
 
   analogReadResolution(12);
   int raw = analogRead(PIN_VBAT);
-  float voltage = raw * 3.3f / 4096.0f * 2.0f;  // x2 for voltage divider
+  float voltage = raw * 3.3f / 4096.0f * 2.0f;  // ×2 for onboard voltage divider
 
   digitalWrite(14, LOW);
   return voltage;
@@ -320,7 +301,7 @@ int getBatteryPercent() {
   float v = getBatteryVoltage();
   if (v >= 4.2f) return 100;
   if (v <= 3.2f) return 0;
-  return (int)((v - 3.2f) / 1.0f * 100.0f);
+  return (int)((v - 3.2f) / 1.0f * 100.0f);  // linear 3.2V–4.2V → 0–100%
 }
 
 void flashBattery() {
@@ -329,13 +310,13 @@ void flashBattery() {
   delay(300);
 
   if (pct > 75) {
-    blinkRGB(0, 255, 40, 4, 200, 150);   // 4x green
+    blinkRGB(0, 255, 40, 4, 200, 150);   // 4× green  (>75%)
   } else if (pct > 50) {
-    blinkRGB(0, 255, 40, 3, 200, 150);   // 3x green
+    blinkRGB(0, 255, 40, 3, 200, 150);   // 3× green  (50–75%)
   } else if (pct > 25) {
-    blinkRGB(255, 180, 0, 2, 200, 150);  // 2x yellow
+    blinkRGB(255, 180, 0, 2, 200, 150);  // 2× yellow (25–50%)
   } else {
-    blinkRGB(255, 0, 0, 1, 400, 0);      // 1x red
+    blinkRGB(255, 0, 0, 1, 200, 0);      // 1× red    (<25%)
   }
 
   delay(300);
@@ -357,15 +338,15 @@ void goToSleep() {
   setRGB(0, 0, 0);
   state = SLEEPING;
 
-  // Ensure magic is set so next wakeup knows it came from sleep
-  *retainedMagic = MAGIC;
+  // Configure GPIO SENSE wakeup BEFORE entering SYSTEMOFF.
+  // Without this the device sleeps but never wakes on button press.
+  NRF_GPIO->PIN_CNF[g_ADigitalPinMap[PIN_BTN]] =
+    (GPIO_PIN_CNF_SENSE_Low    << GPIO_PIN_CNF_SENSE_Pos) |
+    (GPIO_PIN_CNF_PULL_Pullup  << GPIO_PIN_CNF_PULL_Pos)  |
+    (GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos) |
+    (GPIO_PIN_CNF_DIR_Input    << GPIO_PIN_CNF_DIR_Pos);
 
-  // Configure button pin as wakeup source
-  pinMode(PIN_BTN, INPUT_PULLUP);
-
-  // Enter system off (deepest sleep, ~2.5µA)
-  // Button press on PIN_BTN will trigger wakeup (full reboot into setup())
+  // Deep sleep — ~2.5µA. Button press triggers full reboot into setup().
   NRF_POWER->SYSTEMOFF = 1;
-  // Execution never reaches here
-  while (1);
+  while (1);  // unreachable; suppresses compiler warnings
 }
