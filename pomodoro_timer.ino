@@ -53,6 +53,11 @@ unsigned long lastReleaseAt   = 0;
 int           clickCount      = 0;
 bool          longPressHandled = false;
 
+// Saved state for triple-click restore
+State         savedState      = SLEEPING;
+unsigned long savedPausedMillis  = 0;
+unsigned long savedPauseStarted  = 0;
+
 // ── LED ───────────────────────────────────────────
 void setRGB(uint8_t r, uint8_t g, uint8_t b) {
   analogWrite(PIN_R, r);
@@ -61,10 +66,12 @@ void setRGB(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void ledsOff() {
-  // digitalWrite only — avoids PWM init that causes blue float in SYSTEMOFF
-  digitalWrite(PIN_R, LOW);
-  digitalWrite(PIN_G, LOW);
-  digitalWrite(PIN_B, LOW);
+  // pinMode(OUTPUT) disconnects any running PWM peripheral from the pin.
+  // Without this, digitalWrite alone can't override active PWM and the
+  // LED stays frozen at whatever color it was showing.
+  pinMode(PIN_R, OUTPUT); digitalWrite(PIN_R, LOW);
+  pinMode(PIN_G, OUTPUT); digitalWrite(PIN_G, LOW);
+  pinMode(PIN_B, OUTPUT); digitalWrite(PIN_B, LOW);
 }
 
 void blinkRGB(uint8_t r, uint8_t g, uint8_t b, int times, int onMs, int offMs) {
@@ -194,12 +201,14 @@ void handleButtonEvent() {
   lastBtnState = reading;
   if (millis() - lastDebounce < DEBOUNCE_MS) return;
 
+  // Press detected
   if (reading == LOW && btnState == HIGH) {
     btnPressedAt = millis();
     longPressHandled = false;
     btnState = LOW;
   }
 
+  // Long press fires on hold
   if (reading == LOW && btnState == LOW && !longPressHandled) {
     if (millis() - btnPressedAt >= LONG_PRESS_MS) {
       longPressHandled = true;
@@ -208,20 +217,36 @@ void handleButtonEvent() {
     }
   }
 
+  // Release detected — fire single click immediately
   if (reading == HIGH && btnState == LOW) {
     btnState = HIGH;
     if (!longPressHandled) {
       clickCount++;
       lastReleaseAt = millis();
+
+      if (clickCount == 1) {
+        // Save state before first click so triple-click can restore it
+        savedState = state;
+        savedPausedMillis = pausedMillis;
+        savedPauseStarted = pauseStarted;
+      }
+
+      // Fire immediately — no waiting for triple-click window
+      onSingleClick();
     }
   }
 
+  // Triple click — restore state and show battery
+  if (clickCount >= 3) {
+    state = savedState;
+    pausedMillis = savedPausedMillis;
+    pauseStarted = savedPauseStarted;
+    flashBattery();
+    clickCount = 0;
+  }
+
+  // Reset click count after window expires
   if (clickCount > 0 && millis() - lastReleaseAt > TRIPLE_CLICK_MS) {
-    if (clickCount >= 3) {
-      flashBattery();
-    } else {
-      onSingleClick();
-    }
     clickCount = 0;
   }
 }
