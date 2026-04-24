@@ -257,9 +257,14 @@ void updateLED() {
     case RUNNING: {
       unsigned long remaining = timerDuration - elapsed;
       if (remaining <= 5UL * 60 * 1000) {
+        // Last 5 min — faster amber breathing (both modes)
         breathe(255, 80, 0, 2.5);
-      } else {
+      } else if (timerDuration == DURATION_SHORT) {
+        // 25 min — green
         breathe(0, 255, 40, 1.2);
+      } else {
+        // 45 min — blue
+        breathe(40, 80, 255, 1.2);
       }
       break;
     }
