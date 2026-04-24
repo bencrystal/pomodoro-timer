@@ -1,12 +1,8 @@
-// =====================================================
-// Keychain Pomodoro Timer — XIAO nRF52840 (v2)
-// =====================================================
-// Wake: click = 25min, hold = 45min
-// Running: click = pause, hold = cancel+sleep
-// Paused: click = resume, hold = cancel+sleep
-// Done: click = sleep
+// Interaction test — full button/LED logic, no sleep
+// Boot: R-G-B flash then starts 25min timer
+// Single click: pause/resume
+// Long press: cancel (LED off, stays off)
 // Triple click: battery check
-// =====================================================
 
 #include <Arduino.h>
 
@@ -39,18 +35,10 @@ unsigned long lastReleaseAt   = 0;
 int           clickCount      = 0;
 bool          longPressHandled = false;
 
-// ── LED ───────────────────────────────────────────
 void setRGB(uint8_t r, uint8_t g, uint8_t b) {
   analogWrite(PIN_R, r);
   analogWrite(PIN_G, g);
   analogWrite(PIN_B, b);
-}
-
-void ledsOff() {
-  // digitalWrite only — avoids PWM init that causes blue float in SYSTEMOFF
-  digitalWrite(PIN_R, LOW);
-  digitalWrite(PIN_G, LOW);
-  digitalWrite(PIN_B, LOW);
 }
 
 void blinkRGB(uint8_t r, uint8_t g, uint8_t b, int times, int onMs, int offMs) {
@@ -73,7 +61,6 @@ void breathe(uint8_t r, uint8_t g, uint8_t b, float speed) {
   );
 }
 
-// ── Timer ─────────────────────────────────────────
 void startTimer(unsigned long duration) {
   timerDuration = duration;
   startMillis   = millis();
@@ -83,26 +70,12 @@ void startTimer(unsigned long duration) {
   state         = RUNNING;
 }
 
-// ── Sleep ─────────────────────────────────────────
 void goToSleep() {
+  setRGB(0, 0, 0);
   state = SLEEPING;
-
-  ledsOff();
-  pinMode(PIN_R, INPUT_PULLDOWN);
-  pinMode(PIN_G, INPUT_PULLDOWN);
-  pinMode(PIN_B, INPUT_PULLDOWN);
-
-  sd_softdevice_disable();
-
-  nrf_gpio_cfg_sense_input(g_ADigitalPinMap[PIN_BTN],
-                           NRF_GPIO_PIN_PULLUP,
-                           NRF_GPIO_PIN_SENSE_LOW);
-
-  NRF_POWER->SYSTEMOFF = 1;
-  while (1);
+  // No SYSTEMOFF — just sit idle with LED off
 }
 
-// ── Battery ───────────────────────────────────────
 float getBatteryVoltage() {
   pinMode(14, OUTPUT);
   digitalWrite(14, HIGH);
@@ -132,9 +105,12 @@ void flashBattery() {
   delay(300);
 }
 
-// ── Button handling ───────────────────────────────
 void onSingleClick() {
   switch (state) {
+    case SLEEPING:
+      // Without real sleep, single click from idle starts 25min
+      startTimer(DURATION_SHORT);
+      break;
     case RUNNING:
       state = PAUSED;
       pauseStarted = millis();
@@ -146,13 +122,15 @@ void onSingleClick() {
     case DONE:
       goToSleep();
       break;
-    default:
-      break;
   }
 }
 
 void onLongPress() {
   switch (state) {
+    case SLEEPING:
+      // Long press from idle starts 45min
+      startTimer(DURATION_LONG);
+      break;
     case RUNNING:
     case PAUSED:
       goToSleep();
@@ -204,7 +182,6 @@ void handleButtonEvent() {
   }
 }
 
-// ── LED state ─────────────────────────────────────
 void updateLED() {
   switch (state) {
     case RUNNING: {
@@ -234,38 +211,22 @@ void updateLED() {
   }
 }
 
-// =====================================================
-// SETUP
-// =====================================================
 void setup() {
   pinMode(PIN_BTN, INPUT_PULLUP);
   pinMode(PIN_R, OUTPUT);
   pinMode(PIN_G, OUTPUT);
   pinMode(PIN_B, OUTPUT);
-  ledsOff();
 
-  delay(10);
+  // Startup flash to confirm firmware
+  setRGB(255, 0, 0); delay(300);
+  setRGB(0, 255, 0); delay(300);
+  setRGB(0, 0, 255); delay(300);
+  setRGB(0, 0, 0);   delay(300);
 
-  if (digitalRead(PIN_BTN) == LOW) {
-    // Button held = woke from sleep. Time hold for short/long press.
-    unsigned long wakeTime = millis();
-    while (digitalRead(PIN_BTN) == LOW) {
-      if (millis() - wakeTime > LONG_PRESS_MS) {
-        startTimer(DURATION_LONG);
-        while (digitalRead(PIN_BTN) == LOW) delay(10);
-        return;
-      }
-      delay(10);
-    }
-    startTimer(DURATION_SHORT);
-  } else {
-    goToSleep();
-  }
+  // Start 25min timer immediately
+  startTimer(DURATION_SHORT);
 }
 
-// =====================================================
-// LOOP
-// =====================================================
 void loop() {
   handleButtonEvent();
 
