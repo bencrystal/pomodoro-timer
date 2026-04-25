@@ -193,11 +193,7 @@ void goToSleep() {
 
   NRF_POWER->GPREGRET = SLEEP_MAGIC;
 
-  uint8_t sd_en = 0;
-  sd_softdevice_is_enabled(&sd_en);
-  if (sd_en) {
-    sd_softdevice_disable();
-  }
+  sd_softdevice_disable();
 
   nrf_gpio_cfg_sense_input(g_ADigitalPinMap[PIN_BTN],
                            NRF_GPIO_PIN_PULLUP,
