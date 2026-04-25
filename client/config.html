@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pomodoro Timer Config</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a2e; color: #e0e0e0;
+      min-height: 100vh; padding: 20px;
+    }
+    h1 { text-align: center; margin-bottom: 8px; color: #00c8c8; font-size: 1.4em; }
+    .subtitle { text-align: center; color: #888; font-size: 0.85em; margin-bottom: 24px; }
+    #connectBtn, #saveBtn {
+      display: block; width: 100%; max-width: 400px; margin: 0 auto 20px;
+      padding: 14px; border: none; border-radius: 8px;
+      font-size: 1.1em; font-weight: 600; cursor: pointer;
+    }
+    #connectBtn { background: #00c8c8; color: #1a1a2e; }
+    #connectBtn:hover { background: #00e0e0; }
+    #connectBtn:disabled { background: #555; color: #999; cursor: default; }
+    #saveBtn { background: #00c853; color: #1a1a2e; display: none; }
+    #saveBtn:hover { background: #00e064; }
+    #status {
+      text-align: center; padding: 8px; margin-bottom: 16px;
+      font-size: 0.9em; color: #aaa;
+    }
+    .settings { display: none; max-width: 400px; margin: 0 auto; }
+    .group {
+      background: #16213e; border-radius: 8px; padding: 16px;
+      margin-bottom: 12px;
+    }
+    .group h3 { color: #00c8c8; font-size: 0.95em; margin-bottom: 12px; }
+    .field { margin-bottom: 12px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label {
+      display: block; font-size: 0.8em; color: #aaa;
+      margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .field input[type="number"] {
+      width: 80px; padding: 8px; border: 1px solid #333; border-radius: 4px;
+      background: #0f1729; color: #e0e0e0; font-size: 1em;
+    }
+    .field input[type="color"] {
+      width: 50px; height: 36px; border: 1px solid #333; border-radius: 4px;
+      background: #0f1729; cursor: pointer; padding: 2px;
+    }
+    .field input[type="range"] {
+      width: 160px; vertical-align: middle;
+    }
+    .field .range-val { display: inline-block; width: 40px; text-align: right; font-size: 0.9em; }
+    .row { display: flex; align-items: center; gap: 12px; }
+    .note {
+      text-align: center; color: #666; font-size: 0.75em;
+      margin-top: 20px; max-width: 400px; margin-left: auto; margin-right: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>Pomodoro Timer Config</h1>
+  <p class="subtitle">Connect via Bluetooth to configure your timer</p>
+
+  <button id="connectBtn">Connect to Timer</button>
+  <div id="status"></div>
+
+  <div class="settings" id="settingsPanel">
+    <div class="group">
+      <h3>Timer Durations</h3>
+      <div class="field">
+        <label>Short press duration (min)</label>
+        <input type="number" id="shortDur" min="1" max="120" value="25">
+      </div>
+      <div class="field">
+        <label>Long press duration (min)</label>
+        <input type="number" id="longDur" min="1" max="120" value="45">
+      </div>
+      <div class="field">
+        <label>Warning threshold (min remaining)</label>
+        <input type="number" id="warnThresh" min="0" max="30" value="5">
+      </div>
+      <div class="field">
+        <label>Pause timeout (min)</label>
+        <input type="number" id="pauseTout" min="1" max="60" value="10">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>LED Colors</h3>
+      <div class="field">
+        <label>Short mode color</label>
+        <div class="row">
+          <input type="color" id="shortColor" value="#00ff28">
+        </div>
+      </div>
+      <div class="field">
+        <label>Long mode color</label>
+        <div class="row">
+          <input type="color" id="longColor" value="#2850ff">
+        </div>
+      </div>
+      <div class="field">
+        <label>Warning color</label>
+        <div class="row">
+          <input type="color" id="warnColor" value="#ff5000">
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Breathing Speed</h3>
+      <div class="field">
+        <label>Normal speed</label>
+        <div class="row">
+          <input type="range" id="breatheSpeed" min="5" max="50" value="12">
+          <span class="range-val" id="breatheVal">1.2</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>Warning speed</label>
+        <div class="row">
+          <input type="range" id="warnBreatheSpeed" min="5" max="50" value="25">
+          <span class="range-val" id="warnBreatheVal">2.5</span>
+        </div>
+      </div>
+    </div>
+
+    <button id="saveBtn">Save to Device</button>
+  </div>
+
+  <p class="note">
+    To enter config mode: wake your timer with 5 rapid clicks.<br>
+    The LED will breathe cyan when ready to connect.<br>
+    Works in Chrome and Edge. Not supported in Safari/iOS.
+  </p>
+
+<script>
+const SERVICE_UUID       = '19b10000-e8f2-537e-4f6c-d104768a1214';
+const CHAR_SHORT_DUR     = '19b10001-e8f2-537e-4f6c-d104768a1214';
+const CHAR_LONG_DUR      = '19b10002-e8f2-537e-4f6c-d104768a1214';
+const CHAR_WARN_THRESH   = '19b10003-e8f2-537e-4f6c-d104768a1214';
+const CHAR_SHORT_COLOR   = '19b10004-e8f2-537e-4f6c-d104768a1214';
+const CHAR_LONG_COLOR    = '19b10005-e8f2-537e-4f6c-d104768a1214';
+const CHAR_WARN_COLOR    = '19b10006-e8f2-537e-4f6c-d104768a1214';
+const CHAR_BREATHE       = '19b10007-e8f2-537e-4f6c-d104768a1214';
+const CHAR_WARN_BREATHE  = '19b10008-e8f2-537e-4f6c-d104768a1214';
+const CHAR_PAUSE_TOUT    = '19b10009-e8f2-537e-4f6c-d104768a1214';
+const CHAR_SAVE          = '19b1000a-e8f2-537e-4f6c-d104768a1214';
+
+let device, server, service;
+let chars = {};
+
+const $ = id => document.getElementById(id);
+const status = msg => $('status').textContent = msg;
+
+function rgbToHex(r, g, b) {
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToRgb(hex) {
+  const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [0, 0, 0];
+}
+
+$('breatheSpeed').addEventListener('input', e => {
+  $('breatheVal').textContent = (e.target.value / 10).toFixed(1);
+});
+$('warnBreatheSpeed').addEventListener('input', e => {
+  $('warnBreatheVal').textContent = (e.target.value / 10).toFixed(1);
+});
+
+$('connectBtn').addEventListener('click', async () => {
+  if (!navigator.bluetooth) {
+    status('Web Bluetooth not supported in this browser.');
+    return;
+  }
+  try {
+    status('Scanning for Pomodoro Config...');
+    $('connectBtn').disabled = true;
+
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }]
+    });
+
+    device.addEventListener('gattserverdisconnected', () => {
+      status('Disconnected.');
+      $('settingsPanel').style.display = 'none';
+      $('saveBtn').style.display = 'none';
+      $('connectBtn').disabled = false;
+      $('connectBtn').textContent = 'Reconnect';
+    });
+
+    status('Connecting...');
+    server = await device.gatt.connect();
+    service = await server.getPrimaryService(SERVICE_UUID);
+
+    // Get all characteristics
+    chars.shortDur    = await service.getCharacteristic(CHAR_SHORT_DUR);
+    chars.longDur     = await service.getCharacteristic(CHAR_LONG_DUR);
+    chars.warnThresh  = await service.getCharacteristic(CHAR_WARN_THRESH);
+    chars.shortColor  = await service.getCharacteristic(CHAR_SHORT_COLOR);
+    chars.longColor   = await service.getCharacteristic(CHAR_LONG_COLOR);
+    chars.warnColor   = await service.getCharacteristic(CHAR_WARN_COLOR);
+    chars.breathe     = await service.getCharacteristic(CHAR_BREATHE);
+    chars.warnBreathe = await service.getCharacteristic(CHAR_WARN_BREATHE);
+    chars.pauseTout   = await service.getCharacteristic(CHAR_PAUSE_TOUT);
+    chars.save        = await service.getCharacteristic(CHAR_SAVE);
+
+    status('Reading current settings...');
+
+    // Read values
+    const shortDurVal   = (await chars.shortDur.readValue()).getUint16(0, true);
+    const longDurVal    = (await chars.longDur.readValue()).getUint16(0, true);
+    const warnThreshVal = (await chars.warnThresh.readValue()).getUint8(0);
+    const shortColorVal = new Uint8Array((await chars.shortColor.readValue()).buffer);
+    const longColorVal  = new Uint8Array((await chars.longColor.readValue()).buffer);
+    const warnColorVal  = new Uint8Array((await chars.warnColor.readValue()).buffer);
+    const breatheVal    = (await chars.breathe.readValue()).getUint8(0);
+    const warnBreatheVal = (await chars.warnBreathe.readValue()).getUint8(0);
+    const pauseToutVal  = (await chars.pauseTout.readValue()).getUint8(0);
+
+    // Populate UI
+    $('shortDur').value = shortDurVal;
+    $('longDur').value = longDurVal;
+    $('warnThresh').value = warnThreshVal;
+    $('shortColor').value = rgbToHex(shortColorVal[0], shortColorVal[1], shortColorVal[2]);
+    $('longColor').value = rgbToHex(longColorVal[0], longColorVal[1], longColorVal[2]);
+    $('warnColor').value = rgbToHex(warnColorVal[0], warnColorVal[1], warnColorVal[2]);
+    $('breatheSpeed').value = breatheVal;
+    $('breatheVal').textContent = (breatheVal / 10).toFixed(1);
+    $('warnBreatheSpeed').value = warnBreatheVal;
+    $('warnBreatheVal').textContent = (warnBreatheVal / 10).toFixed(1);
+    $('pauseTout').value = pauseToutVal;
+
+    $('settingsPanel').style.display = 'block';
+    $('saveBtn').style.display = 'block';
+    $('connectBtn').textContent = 'Connected';
+    status('Connected. Edit settings below, then save.');
+
+  } catch (err) {
+    status('Error: ' + err.message);
+    $('connectBtn').disabled = false;
+  }
+});
+
+$('saveBtn').addEventListener('click', async () => {
+  try {
+    status('Saving settings...');
+
+    // Write durations (uint16 LE)
+    const shortBuf = new ArrayBuffer(2);
+    new DataView(shortBuf).setUint16(0, parseInt($('shortDur').value), true);
+    await chars.shortDur.writeValue(shortBuf);
+
+    const longBuf = new ArrayBuffer(2);
+    new DataView(longBuf).setUint16(0, parseInt($('longDur').value), true);
+    await chars.longDur.writeValue(longBuf);
+
+    // Write single bytes
+    await chars.warnThresh.writeValue(new Uint8Array([parseInt($('warnThresh').value)]));
+    await chars.pauseTout.writeValue(new Uint8Array([parseInt($('pauseTout').value)]));
+    await chars.breathe.writeValue(new Uint8Array([parseInt($('breatheSpeed').value)]));
+    await chars.warnBreathe.writeValue(new Uint8Array([parseInt($('warnBreatheSpeed').value)]));
+
+    // Write colors
+    const sc = hexToRgb($('shortColor').value);
+    await chars.shortColor.writeValue(new Uint8Array(sc));
+
+    const lc = hexToRgb($('longColor').value);
+    await chars.longColor.writeValue(new Uint8Array(lc));
+
+    const wc = hexToRgb($('warnColor').value);
+    await chars.warnColor.writeValue(new Uint8Array(wc));
+
+    // Trigger save to flash
+    await chars.save.writeValue(new Uint8Array([1]));
+
+    status('Settings saved! Device will blink green to confirm.');
+  } catch (err) {
+    status('Save error: ' + err.message);
+  }
+});
+</script>
+</body>
+</html>
